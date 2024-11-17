@@ -1,0 +1,18 @@
+{
+  "version": "0.2",
+  "language": "en",
+  // words - list of words to be always considered correct
+  "words": [
+    "httplog",
+    "ifnotnil",
+    "nolint",
+    "stretchr",
+    "testingx",
+    "thelper"
+  ],
+  "ignorePaths": [
+    ".git",
+    "/go.mod",
+    "/go.sum"
+  ]
+}
