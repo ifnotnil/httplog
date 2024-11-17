@@ -51,7 +51,7 @@ type serverTestCase struct {
 	logOutput  *bytes.Buffer
 }
 
-func (s *serverTestCase) Init(handler func(w http.ResponseWriter, r *http.Request)) {
+func (s *serverTestCase) Init(initHTTPLogger func(*slog.Logger) *HTTPLogger, handler func(w http.ResponseWriter, r *http.Request)) {
 	s.t.Helper()
 	s.logOutput = &bytes.Buffer{}
 	logger := slog.New(slog.NewJSONHandler(s.logOutput, &slog.HandlerOptions{
@@ -73,10 +73,7 @@ func (s *serverTestCase) Init(handler func(w http.ResponseWriter, r *http.Reques
 		},
 	}))
 
-	il := NewHTTPLogger(
-		WithLogger(logger),
-		WithLogInLevel(slog.LevelInfo),
-	)
+	il := initHTTPLogger(logger)
 
 	s.testSrv = httptest.NewServer(il.Handler(http.HandlerFunc(handler)))
 
@@ -117,58 +114,88 @@ func (s *serverTestCase) Close() {
 	s.testSrv.Close()
 }
 
-func TestInbound(t *testing.T) {
-	tests := map[string]struct {
-		srvHandler     func(t *testing.T) func(w http.ResponseWriter, r *http.Request)
-		requestFn      func(ctx context.Context, srvURL string) (*http.Request, error)
-		assertResponse func(t *testing.T, r *http.Response)
-		expectedLogs   []map[string]any
-	}{
-		"simple": {
-			requestFn: func(ctx context.Context, srvURL string) (*http.Request, error) {
-				req, err := http.NewRequestWithContext(ctx, http.MethodGet, srvURL, strings.NewReader(`"request body"`))
-				if err != nil {
-					return nil, err
-				}
-				req.Header.Set(`Content-Type`, `application/json`)
-				return req, nil
-			},
-			srvHandler: func(t *testing.T) func(w http.ResponseWriter, r *http.Request) { //nolint:thelper
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					// assert received request
-					requestBody := testingx.ReadAndClose(t, r.Body)
-					assert.Equal(t, `"request body"`, string(requestBody))
+type inboundTestCase struct {
+	initHTTPLogger func(logger *slog.Logger) *HTTPLogger
+	srvHandler     func(t *testing.T) func(w http.ResponseWriter, r *http.Request)
+	requestFn      func(ctx context.Context, srvURL string) (*http.Request, error)
+	assertResponse func(t *testing.T, r *http.Response)
+	expectedLogs   []map[string]any
+}
 
-					w.Header().Set(`Content-Type`, `application/json`)
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write([]byte(`"response body"`))
-				})
-			},
-			assertResponse: func(t *testing.T, r *http.Response) { //nolint:thelper
-				// assert received response
+func TestInbound(t *testing.T) {
+	simpleTc := inboundTestCase{
+		requestFn: func(ctx context.Context, srvURL string) (*http.Request, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, srvURL, strings.NewReader(`"request body"`))
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set(`Content-Type`, `application/json`)
+			return req, nil
+		},
+		srvHandler: func(t *testing.T) func(w http.ResponseWriter, r *http.Request) { //nolint:thelper
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// assert received request
 				requestBody := testingx.ReadAndClose(t, r.Body)
-				assert.Equal(t, `"response body"`, string(requestBody))
-			},
-			expectedLogs: []map[string]any{
-				{
-					"level": "INFO",
-					"msg":   "http inbound",
-					"request": map[string]any{
-						"body":          map[string]any{"size": float64(14), "value": `\"request body\"`}, // json as json string
-						"contentLength": float64(14),
-						"headers":       map[string]any{"Accept-Encoding": "gzip", "Content-Length": "14", "Content-Type": "application/json", "User-Agent": "Go-http-client/1.1"},
-						"method":        "GET",
-						"proto":         "HTTP/1.1",
-						"requestUri":    "/",
-						"url":           map[string]any{"fragment": "", "full": ":///", "host": "", "opaque": "", "path": "/", "scheme": ""},
-					},
-					"response": map[string]any{
-						"body":    map[string]any{"size": float64(15), "value": `\"response body\"`}, // json as json string
-						"headers": map[string]any{"Content-Type": "application/json"},
-						"status":  map[string]any{"code": float64(200), "name": "OK"},
-					},
+				assert.Equal(t, `"request body"`, string(requestBody))
+
+				w.Header().Set(`Content-Type`, `application/json`)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`"response body"`))
+			})
+		},
+		assertResponse: func(t *testing.T, r *http.Response) { //nolint:thelper
+			// assert received response
+			requestBody := testingx.ReadAndClose(t, r.Body)
+			assert.Equal(t, `"response body"`, string(requestBody))
+		},
+		expectedLogs: []map[string]any{
+			{
+				"level": "INFO",
+				"msg":   "http inbound",
+				"request": map[string]any{
+					"body":          map[string]any{"size": float64(14), "value": `\"request body\"`}, // json as json string
+					"contentLength": float64(14),
+					"headers":       map[string]any{"Accept-Encoding": "gzip", "Content-Length": "14", "Content-Type": "application/json", "User-Agent": "Go-http-client/1.1"},
+					"method":        "GET",
+					"proto":         "HTTP/1.1",
+					"requestUri":    "/",
+					"url":           map[string]any{"fragment": "", "full": ":///", "host": "", "opaque": "", "path": "/", "scheme": ""},
+				},
+				"response": map[string]any{
+					"body":    map[string]any{"size": float64(15), "value": `\"response body\"`}, // json as json string
+					"headers": map[string]any{"Content-Type": "application/json"},
+					"status":  map[string]any{"code": float64(200), "name": "OK"},
 				},
 			},
+		},
+	}
+
+	tests := map[string]inboundTestCase{
+		"simple Drain": {
+			initHTTPLogger: func(logger *slog.Logger) *HTTPLogger {
+				return NewHTTPLogger(
+					WithLogger(logger),
+					WithLogInLevel(slog.LevelInfo),
+					WithMode(Drain),
+				)
+			},
+			srvHandler:     simpleTc.srvHandler,
+			requestFn:      simpleTc.requestFn,
+			assertResponse: simpleTc.assertResponse,
+			expectedLogs:   simpleTc.expectedLogs,
+		},
+		"simple Tee": {
+			initHTTPLogger: func(logger *slog.Logger) *HTTPLogger {
+				return NewHTTPLogger(
+					WithLogger(logger),
+					WithLogInLevel(slog.LevelInfo),
+					WithMode(Tee),
+				)
+			},
+			srvHandler:     simpleTc.srvHandler,
+			requestFn:      simpleTc.requestFn,
+			assertResponse: simpleTc.assertResponse,
+			expectedLogs:   simpleTc.expectedLogs,
 		},
 	}
 
@@ -177,7 +204,7 @@ func TestInbound(t *testing.T) {
 			ctx := context.Background()
 
 			srv := serverTestCase{t: t}
-			srv.Init(tc.srvHandler(t))
+			srv.Init(tc.initHTTPLogger, tc.srvHandler(t))
 			srv.Do(ctx, tc.requestFn, tc.assertResponse)
 			srv.Verify(tc.expectedLogs)
 		})
