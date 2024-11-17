@@ -197,6 +197,19 @@ func TestInbound(t *testing.T) {
 			assertResponse: simpleTc.assertResponse,
 			expectedLogs:   simpleTc.expectedLogs,
 		},
+		"simple Wrong Mode": {
+			initHTTPLogger: func(logger *slog.Logger) *HTTPLogger {
+				return NewHTTPLogger(
+					WithLogger(logger),
+					WithLogInLevel(slog.LevelInfo),
+					WithMode(Mode(100)),
+				)
+			},
+			srvHandler:     simpleTc.srvHandler,
+			requestFn:      simpleTc.requestFn,
+			assertResponse: simpleTc.assertResponse,
+			expectedLogs:   simpleTc.expectedLogs,
+		},
 	}
 
 	for name, tc := range tests {
